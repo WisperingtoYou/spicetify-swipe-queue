@@ -118,7 +118,15 @@
       // higher = snappier but more prone to feeling jumpy if wheel events
       // arrive in uneven bursts. This is what gives the continuous,
       // interruptible macOS-pan feel instead of frame-to-frame jumps.
-      TRACKING_SMOOTHING: 0.28,
+      //
+      // 0.28 measured out to ~2-3 frames of chronic trailing lag behind the
+      // input on a 120Hz display (confirmed via live frame sampling on
+      // 2026-08-17) — since the target moves on nearly every frame during
+      // an active drag, that's a constant "always chasing" feel rather than
+      // a one-time settle, which read as sluggish/weighted. 0.55 keeps
+      // meaningful inter-frame interpolation (still not raw 1:1) while
+      // roughly halving that lag.
+      TRACKING_SMOOTHING: 0.55,
 
       // Minimum |deltaX| (px) before we even consider starting a gesture,
       // so normal vertical scrolling / tiny trackpad jitter doesn't trigger it.
@@ -476,6 +484,12 @@
         applyTransform(g, 0);
         g.overlayEl.style.width = "0px";
         setTimeout(() => {
+          // Same cooldown stamp as the queue-remove branch above — without
+          // it, fingers still resting on the trackpad right after a commit
+          // (residual/inertial wheel events) could immediately start a
+          // second gesture on the row that just snapped back, leaving a
+          // small stuck overlay sliver instead of a clean, settled row.
+          lastCommitTime = Date.now();
           activeGesture = null;
           cleanupGesture(g);
         }, CONFIG.COMMIT_SNAP_MS);
