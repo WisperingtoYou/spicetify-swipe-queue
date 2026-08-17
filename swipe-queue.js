@@ -68,11 +68,17 @@
       DEBUG: false,
 
       // Matches a single track row in any tracklist (playlist, album,
-      // search results, liked songs, queue...). Confirmed against your
-      // build on 2026-06-30 via DevTools — your version uses Spotify's
-      // Encore design system, where rows are identified by
-      // data-encore-id="listRow" rather than a data-testid.
-      ROW_SELECTOR: '[data-encore-id="listRow"]',
+      // search results, liked songs) or the queue panel. Re-verified via
+      // live DevTools inspection on 2026-08-17: regular tracklists (album/
+      // playlist/search) now render rows as `.main-trackList-trackListRow`
+      // (a `draggable="true"` div), NOT `data-encore-id="listRow"` — that
+      // encore-id is now a generic design-system marker shared by lots of
+      // unrelated small elements (shelf titles, artwork cells, etc.), which
+      // is why swipes on regular rows previously fell through to Spotify's
+      // own two-finger back/forward navigation instead of triggering the
+      // gesture. The queue panel's "Next up" rows still use the old
+      // data-encore-id="listRow" markup, so both patterns are kept.
+      ROW_SELECTOR: '[data-encore-id="listRow"], .main-trackList-trackListRow',
 
       // ADJUST ME (#2): selectors (comma-separated) for ancestors that
       // identify the row as living inside the right-hand Queue panel,
