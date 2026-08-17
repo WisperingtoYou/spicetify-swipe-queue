@@ -1,11 +1,25 @@
 // ==[ swipe-queue.js ]========================================================
-// Spicetify extension: mobile-style two-finger trackpad swipe gestures.
+// Spicetify extension: mobile-style two-finger trackpad swipe gestures, plus
+// a keybind that does the same thing without a trackpad.
 //
 //   Tracklist rows (playlists, albums, search, etc.)
-//     swipe right  -> add track to queue, row snaps back, brief green flash
+//     swipe right          -> add track to queue, row snaps back, green flash
+//     hover + KEYBIND       -> same, no trackpad needed
 //
 //   Queue panel rows (right-hand "Now Playing" queue list)
-//     swipe right  -> remove track from queue, row slides off + collapses
+//     swipe right          -> remove track from queue, row slides off + collapses
+//     hover + KEYBIND       -> same, no trackpad needed
+//
+// Platform: this file has no macOS-specific logic anywhere — it only touches
+// Spotify's own web DOM and the cross-platform Spicetify API, and two-finger
+// trackpad panning reports the same wheel deltaX events on Windows Precision
+// Touchpad as it does on macOS. So the swipe gesture is expected to work on
+// Windows unmodified; PLATFORM_OVERRIDES below exists as a ready-made hook to
+// retune it per-OS if real-world testing (which this extension's author could
+// not do on real Windows hardware) says it needs it. The KEYBIND, added
+// 2026-08-17, works identically on every platform and every input device —
+// hover any row and press it — and is the guaranteed fallback if a given
+// touchpad/OS combination doesn't report gesture events the way this expects.
 //
 // Designed to be 100% additive: it does not move, wrap, or restructure any
 // DOM nodes that belong to Spotify/Spicetify or other extensions/themes. It
@@ -23,10 +37,11 @@
 //
 // TROUBLESHOOTING
 //   Flip DEBUG to true below, open DevTools (spicetify enable-devtools &&
-//   spicetify apply, then Cmd+Option+I in the app), and watch the console
-//   while you try the gesture. See the README that ships alongside this
-//   file for the full guide. The three things most likely to need a tweak
-//   for your exact Spotify build are marked "ADJUST ME" below.
+//   spicetify apply, then open DevTools in the app — Cmd+Option+I on macOS,
+//   Ctrl+Shift+I on Windows), and watch the console while you try the
+//   gesture or keybind. See the README that ships alongside this file for
+//   the full guide. The four things most likely to need a tweak for your
+//   exact Spotify build/platform are marked "ADJUST ME" below.
 // -----------------------------------------------------------------------
 
 (function SwipeQueue() {
@@ -149,7 +164,46 @@
 
       COLOR_RED: "#e22134",
       COLOR_GREEN: "#1ed760",
+
+      // Hover any row and press this to trigger the same action as the
+      // swipe (add on a tracklist row, remove on a queue row) — works on
+      // every platform and input device, no trackpad required. `code` is
+      // the physical key (layout-independent); the modifiers are exact —
+      // all four must match with no extras held.
+      KEYBIND: {
+        ENABLED: true,
+        ctrlKey: true,
+        shiftKey: true,
+        altKey: false,
+        metaKey: false,
+        code: "Space",
+        FLASH_MS: 220,
+      },
     };
+
+    // ADJUST ME (#4): this file has no macOS-specific logic — Spotify's web
+    // DOM and the Spicetify API are the same on every platform, and Chromium
+    // reports two-finger trackpad panning as the same wheel deltaX events on
+    // Windows Precision Touchpad as on macOS — so the swipe gesture is
+    // expected to work unmodified. This is here as a ready-made hook in case
+    // real testing on Windows (not done by this file's author — no Windows
+    // hardware available) finds it needs different tuning, e.g.:
+    //   PLATFORM_OVERRIDES.windows = { SENSITIVITY: 0.6 };
+    // If the gesture doesn't work at all on a given machine, the KEYBIND
+    // above works regardless — hover a row and press it.
+    const PLATFORM = (() => {
+      const raw =
+        (navigator.userAgentData && navigator.userAgentData.platform) ||
+        navigator.platform ||
+        navigator.userAgent ||
+        "";
+      if (/win/i.test(raw)) return "windows";
+      if (/mac/i.test(raw)) return "mac";
+      if (/linux/i.test(raw)) return "linux";
+      return "unknown";
+    })();
+    const PLATFORM_OVERRIDES = { windows: {}, mac: {}, linux: {}, unknown: {} };
+    Object.assign(CONFIG, PLATFORM_OVERRIDES[PLATFORM]);
 
     const ARM_THRESHOLD = CONFIG.REVEAL_WIDTH * CONFIG.ARM_RATIO;
 
@@ -522,6 +576,126 @@
       }
     }
 
+    // ---- KEYBIND (no trackpad needed) ---------------------------------------
+    // Hover a row, press CONFIG.KEYBIND — same add/remove logic as the swipe,
+    // just without the drag. Deliberately kept separate from the drag/overlay
+    // machinery above rather than reusing it, so this can't interfere with an
+    // in-progress swipe gesture on some other row.
+
+    let hoveredRow = null;
+
+    document.addEventListener("mouseover", (e) => {
+      const row = e.target.closest(CONFIG.ROW_SELECTOR);
+      if (row) hoveredRow = row;
+    });
+    document.addEventListener("mouseout", (e) => {
+      const row = e.target.closest(CONFIG.ROW_SELECTOR);
+      // relatedTarget is null when the mouse leaves the window entirely, and
+      // moving to a child element within the same row shouldn't count as
+      // "leaving" it -- only clear hoveredRow once the pointer is genuinely
+      // outside the row's own subtree.
+      if (row && (!e.relatedTarget || !row.contains(e.relatedTarget))) {
+        if (hoveredRow === row) hoveredRow = null;
+      }
+    });
+
+    // Quick full-row flash for feedback. Reuses the same floating overlay
+    // element the drag gesture uses (createOverlay) rather than touching
+    // the row's own background-color directly — Spotify applies its own
+    // hover/selection background to rows (with enough CSS priority to paint
+    // over a plain inline background-color, confirmed empirically), and a
+    // fully independent element appended to <body> can't be hidden by that
+    // no matter what Spotify's own styling does. Also avoids touching
+    // `position` on the row, since some rows may rely on `position:
+    // absolute` for virtualization and forcing `relative` could disturb it.
+    function flashRow(row, context) {
+      const rect = row.getBoundingClientRect();
+      const overlay = createOverlay(context);
+      const inner = overlay.querySelector(".swipequeue-overlay-inner");
+      if (inner) inner.style.width = "100%"; // full-row flash, not a REVEAL_WIDTH-wide strip
+
+      overlay.style.left = rect.left + "px";
+      overlay.style.top = rect.top + "px";
+      overlay.style.width = rect.width + "px";
+      overlay.style.height = rect.height + "px";
+      overlay.style.opacity = "0";
+      overlay.style.transition = `opacity ${CONFIG.KEYBIND.FLASH_MS}ms ease-out`;
+
+      // Force a synchronous style flush so the browser can't coalesce the
+      // opacity:0 -> opacity:1 flip below into a no-op (which would skip
+      // the flash-in entirely). Deliberately not requestAnimationFrame for
+      // any of this sequencing — rAF is paused indefinitely while the
+      // window is unfocused/hidden, which would leave this overlay stuck
+      // forever; setTimeout below fires regardless of focus.
+      void overlay.offsetHeight;
+      overlay.style.opacity = "1";
+
+      setTimeout(() => {
+        overlay.style.opacity = "0";
+        setTimeout(() => {
+          if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        }, CONFIG.KEYBIND.FLASH_MS);
+      }, CONFIG.KEYBIND.FLASH_MS);
+    }
+
+    function triggerRowAction(row) {
+      if (activeGesture) return; // a drag is already in progress elsewhere
+      if (!row || !row.isConnected) return;
+      if (Date.now() - lastCommitTime < COMMIT_COOLDOWN_MS) return;
+
+      const context = getRowContext(row);
+      const uri = getTrackUriFromRow(row);
+      if (!uri) {
+        if (CONFIG.DEBUG)
+          console.warn("[SwipeQueue] keybind: could not resolve track URI for row", row);
+        return;
+      }
+
+      lastCommitTime = Date.now();
+      flashRow(row, context);
+
+      if (context === "queue") {
+        Spicetify.removeFromQueue([{ uri }]).catch((err) => {
+          console.error("[SwipeQueue] removeFromQueue failed:", err);
+          Spicetify.showNotification("Couldn't remove from queue", true);
+        });
+      } else {
+        Spicetify.addToQueue([{ uri }])
+          .then(() => Spicetify.showNotification("Added to queue"))
+          .catch((err) => {
+            console.error("[SwipeQueue] addToQueue failed:", err);
+            Spicetify.showNotification("Couldn't add to queue", true);
+          });
+      }
+
+      if (CONFIG.DEBUG)
+        console.log("[SwipeQueue] keybind triggered", { context, uri, row });
+    }
+
+    document.addEventListener("keydown", (e) => {
+      const k = CONFIG.KEYBIND;
+      if (!k.ENABLED || e.repeat) return;
+      if (
+        e.code !== k.code ||
+        e.ctrlKey !== k.ctrlKey ||
+        e.shiftKey !== k.shiftKey ||
+        e.altKey !== k.altKey ||
+        e.metaKey !== k.metaKey
+      )
+        return;
+      if (!hoveredRow) return;
+
+      // Don't act while the user is typing somewhere (e.g. Spotify's
+      // search box), even though this combo is an unlikely thing to type.
+      const tag = e.target && e.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable))
+        return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      triggerRowAction(hoveredRow);
+    });
+
     // ---- ENTRY POINT: single delegated, capturing wheel listener -----------
     // capture:true + passive:false lets us intercept the gesture before
     // macOS/Chromium's built-in two-finger back/forward navigation fires.
@@ -545,6 +719,8 @@
       { passive: false, capture: true }
     );
 
-    console.log("[SwipeQueue] loaded");
+    console.log(
+      `[SwipeQueue] loaded (platform: ${PLATFORM}, keybind: ${CONFIG.KEYBIND.ENABLED ? "on" : "off"})`
+    );
   }
 })();
